@@ -1,0 +1,389 @@
+---
+title: "Video Games Data Exploration - Steam FPS 10 Years"
+output: html_notebook
+---
+
+***
+# Appendix: Model Derivation Process & Analysis
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(tidyverse)
+library(olsrr)
+library(GGally)
+library(graphics)
+library(ggplot2)
+library(lmtest)
+library(mctest)
+library(MASS)
+
+rm(list = ls()) # Clear workspace on re-run
+```
+
+## Dataset
+
+First, we read in our dataset, filtering any games without revenue to remove free-to-play and other unreleased games, giving a dataset of 82 rows. 
+```{r}
+steam <- read.csv("https://raw.githubusercontent.com/Delia0926/Linear-Regression-Analysis/main/steam_s-fps.csv") |> filter(est_rev > 0)
+nrow(steam)
+str(steam)
+```
+
+## Expanation of Variables
+
++ Response Variable: *est_rev* -> Estimated revenue for the game, in dollars.
++ Independent Variables:
+  - *rat_pos*: The proportion of positive ratings received for the game, a quantitative value between 0 and 1.
+  - *req_age*: Required minimum age, categorical variables with levels 0, 16 or 18.
+  - *ds_rel*: Number of days between the release of the game, and the reference date of the data--May 15, 2019.
+  - *mac*: True if the game was released for Mac.
+  - *linux*: True if the game was released for Linux.
+  - *multi*: True if the game supported multiplayer.
+  - *online*: True if the game included an online component.
+  - *ctlr*: True if the game had full controller support.
+  - *early_acc*: True if the game was released as early_access.
+
+## Full First-Order Model
+
+First, we created a simple first-order linear model using all variables, to use in our model selection process.
+
+```{r}
+first_order <- lm(
+  est_rev ~ rat_pos + factor(req_age) + ds_rel + mac + linux + multi + online + ctlr + early_acc,
+  data = steam
+)
+
+summary(first_order)
+```
+
+## Best Model Investigation 
+
+We first attempt a Stepwise Selection procedure to determine a model candidate, using 0.1 and 0.3 for *pent* and *prem* parameters respectively.
+
+#### Stepwise selection
+
+```{r}
+step_model <- ols_step_both_p(
+  first_order,
+  pent = 0.1,
+  prem = 0.3,
+  details = FALSE
+)
+
+summary(step_model$model)
+```
+
+This first attempt resulted in a loss of many predictors, more than we were comfortable with before investigating interactions, so we also investigated the initial model using the All-Possible-Regressions Procedure.
+
+#### All-Possible-Regressions Selection Procedure
+
+```{r}
+test_model <- lm(est_rev ~ rat_pos + req_age + ds_rel + multi + ctlr, data = steam)
+ExecSubsets=ols_step_best_subset(first_order, details=TRUE,)
+# for the output interpretation
+rsquare=c(ExecSubsets$rsquare)
+AdjustedR=c(ExecSubsets$adjr)
+cp=c(ExecSubsets$cp)
+AIC=c(ExecSubsets$aic)
+Predictors=c(ExecSubsets$predictors)
+cbind(AdjustedR,cp,AIC,Predictors)
+```
+
+Using a high $R^2_{adj}$ as our primary goal, to emphasize predictive power, we selected the model with 5 predictors. This model has a reasonable value for the Cp Criterion, and the AIC value is relatively close to the others, so in our judgment is reasonable.  This gives us a best selected non-interaction model that includes rating positivity, minimum required age, days since release, multiplayer support, and full controller support.
+
+```{r}
+best_model = lm(est_rev~rat_pos+factor(req_age)+ds_rel+multi+ctlr, data = steam)
+summary(best_model)
+```
+
+The $R^2_{adj}$ value is relatively low at 0.279 and we do not have strong significance for all terms, but we believed there could be some strong interaction effects present and elected to use $\alpha = 0.1$ at this stage for the individual coefficient t-Tests rather than $\alpha = 0.05$.
+
+For comparison, we also attempted a backward elimination selection process, with the same *prem* value of 0.3 as before, and in this way derived the same reduced model.
+
+#### Backward Elimination
+
+```{r}
+back_mod = ols_step_backward_p(first_order, prem = 0.3, detail = FALSE)
+summary(back_mod$model)
+```
+
+The following is the first-order model resulting from our selection procedure:
+
+$$
+\widehat{est.rev} = \hat\beta_0 + \hat\beta_1 X_{ratpos} + \hat\beta_2X_{req.age.i} + \hat\beta_3 X_{ds.rel} + \hat\beta_4 X_{multi.i} + \hat\beta_5 X_{ctlr.i}
+$$
+** Same model by using all-possible-regression selection and backward elimination method. Keep the predictors:"positive rating", "required age", "multiplayer", "controller_support"
+
+## Interaction Model
+
+Our next step is to test a model with interactions. To start we examine a full interactions model, using the variables previous selected.
+
+```{r}
+full_int_model <- lm(est_rev~(rat_pos+factor(req_age)+ds_rel+multi+ctlr)^2, data = steam)
+summary(full_int_model)
+```
+
+After systematically eliminating insignificant interactions, we are left with the following reduced interaction model:
+
+```{r}
+selected_int_model <- lm(
+  est_rev ~ rat_pos + factor(req_age) + ds_rel+ multi + ctlr + factor(req_age):ctlr + ds_rel:ctlr,
+  data = steam
+)
+
+summary(selected_int_model)
+```
+
+The multiplayer variable is very close to significant, and so elect to retain our $\alpha = 0.1$ threshold used previously and maintain this variable in our model.
+```{r}
+print(anova(selected_int_model))
+```
+
+## Higher Order Model
+
+We next examined pair plots of our dependent variable vs. our quantitative independent variables.
+
+```{r}
+pairs(~est_rev + rat_pos + ds_rel, data = steam)
+```
+
+No clear higher-order effects were seen, and after testing both of these dependent variables at higher orders, we were not able to find anything of significance, and so retained our previously derived interactions model.
+
+Following is the equation for this final model:
+
+$$
+\widehat {est.rev} = \beta_0 + \beta_1 X_{ratpos} + \beta_2X_{req.age.i} + \beta_3X_{ds.rel} + \beta_4 X_{multi.i} + \beta_5 X_{ctlr.i} + \beta_6X_{req.age.i}*X_{ctlr.i}+\beta_7X_{df_rel}*X_{ctlr.i}
+$$
+
+## Model Evaluation
+
+#### Linearity Assumption
+
+To check the Linearity Assumption, we examine a Residual vs. Fitted Values plot:
+
+```{r}
+ggplot(selected_int_model, aes(x=.fitted, y=.resid)) +
+  geom_point(colour = "purple") +
+  geom_hline(yintercept = 0) +
+  geom_smooth(colour = "green4")+
+  ggtitle("Residual plot: Residual vs Fitted values")  
+```
+
+We do observe some pattern that makes us question effects at the lower range, but overall the plot appears linear in general and so we determine that the linearity assumption is met.
+
+#### Equal Variance Assumption
+
+To check the Homoscedasticity Assumption, we examine a Scale-Location plot, and perform a B-P test with $\alpha = 0.05$ and the following hypotheses:
+
+$$
+H_0: Heteroscedasticity \:\ is \:\ not \:\ present \:\ (Homoscedasticity)\\
+H_A: Heteroscedasticity \:\ is  \:\ present
+$$
+
+```{r}
+plot(selected_int_model, which = 3)
+```
+
+The plot is difficult to interpret and inconclusive alone.  The result of the B-P test follows:
+
+```{r}
+bptest(selected_int_model)
+```
+The *P*-value observed from this test is 0.7292, greater than our $\alpha$, and so we fail to reject the null hypothesis and conclude that we have homoscedasticity.  Our Equal Variance Assumption is met with this model.
+
+#### Normality Assumption
+
+Next we check normality by examining a Q-Q plot and conducting a Shapiro-Wilk test with $\alpha = 0.05$ and the following hypotheses:
+
+$$
+H_0: The \:\ Sample \:\ Data \:\ are \:\ Significantly \:\ Normally \:\ Distributed \\
+H_a: The \:\ Sample \:\ Data \:\ are \:\ NOT \:\ Significantly \:\ Normally \:\ Distributed 
+$$
+
+```{r}
+plot(selected_int_model, which = 2)
+```
+
+The plot shows an S-shape especially at the higher end, which gives doubt to it being normally distributed.  The result of the Shapiro test follows:
+
+```{r}
+shapiro.test(residuals(selected_int_model))
+```
+The *P*-value for this test is 1.832e-06, greater than our $\alpha$ and so we reject the null hypothesis and conclude that the data are not significantly normally distributed.  The Normality Assumption is not met for this model.
+
+### Multicollinearity Assumption
+
+To check this assumption, we check the Variance Inflation Factor using the model that does not include interactions.
+
+```{r}
+imcdiag(best_model, method="VIF")
+```
+
+No VIF values above 5 were found, indicating that multicollinearity is not found across these model variables.  Our Multicollinearity Assumption is met.
+
+#### Checking for Significant Outliers
+
+We examine a Residuals vs Leverage plot to inspect for outliers that have a significant effect.
+
+```{r}
+plot(selected_int_model, which=5)
+```
+
+The plot does not show any points to the top-right or bottom-right of the plot, outside the Cook's distance lines, indicating that we do not have outliers of significance in this model.  This is further reinforced by checking a Cook's distance plot:
+
+```{r}
+plot(selected_int_model,pch=18,col="purple",which=c(4))
+```
+
+No points with a Cook's distance greater than 0.5 are found.  Outliers of significance are not an issue in our model.
+
+#### Conclusion
+
+All of the assumptions are met for this model, except for the Normality Assumption.  To compensate, we will next attempt a Box-Cox transformation to see if this can correct our model.
+
+## Box-Cox Transformation
+
+First, we use the boxcox function to determine a best lambda.
+
+```{r}
+bc=boxcox(selected_int_model,lambda=seq(-1,2))
+```
+```{r}
+bestlambda=bc$x[which(bc$y==max(bc$y))]
+bestlambda
+```
+
+The best lambda value returned from this procedure is 0.1818182  Using this to transform our model's dependent variable, we get the following result:
+
+```{r}
+bcmodel=lm((((est_rev^bestlambda)-1)/bestlambda)~rat_pos + factor(req_age) + 
+             ds_rel+ multi + ctlr + factor(req_age):ctlr + ds_rel:ctlr,data=steam)
+
+summary(bcmodel)
+```
+
+After this transformation, we lose significance for one interaction, between controller support and days since release.  Dropping this interaction from the transformed model, we get:
+
+```{r}
+final_bc = lm((((est_rev^bestlambda)-1)/bestlambda)~rat_pos + factor(req_age) + 
+                ds_rel+ multi + ctlr + factor(req_age):ctlr ,data=steam)
+
+summary(final_bc)
+```
+
+All variables are now either significant or included as part of a significant interaction.  Note as well that multiplayer support has become a more significant factor that previously.  The $R^2_{adj}$ for this model is 0.4991, which is not especially high, but seems quite good considering the many other factors that can affect a game's revenue.  Following is the fitted equation for this model:
+
+$$
+\begin{align*}
+  \widehat{EST.REV_i}^{(0.1818182)} &= 3.493 + 62.280RAT.POS_i + 0.012DS.REL_i \\
+  &+ \begin{cases}
+    0 &\text{ if } i^{th} \text{ game has no controller support, no minimum age} \\
+    -2.720 &\text{ if } i^{th} \text{ game has no controller support, minimum age 16} \\
+    8.506 &\text{ if } i^{th} \text{ game has no controller support, minimum age 18} \\
+    12.069 &\text{ if } i^{th} \text{ game has controller support, no minimum age} \\
+    9.349 &\text{ if } i^{th} \text{ game has controller support, minimum age 16} \\
+    20.575 &\text{ if } i^{th} \text{ game has controller support, minimum age 18}
+  \end{cases}
+\end{align*}
+$$
+
+where:
+$$
+\widehat{EST.REV_i}^{(0.1818182)} = \frac{\widehat{EST.REV_i}^{0.1818182} - 1}{0.1818182}
+$$
+
+Note that these coefficients are not in Box-Cox transformed units, and so predictions taken must be inverted to return to the original units.
+
+## Evaluation for Final box-Cox Transformed Model
+
+Following is a quick summary of re-assessments of the required model assumptions for this transformed model.  Where applicable, each uses the same hypotheses and confidence level as before.
+
+**Linearity Assumption**
+\\Residual Plot\\
+```{r}
+ggplot(final_bc, aes(x=.fitted, y=.resid)) +
+  geom_point(colour = "purple") +
+  geom_hline(yintercept = 0) +
+  geom_smooth(colour = "green4")+
+  ggtitle("Residual plot: Residual vs Fitted values")  
+```
+**Shows no pattern, even more clearly linear than before.
+
+**Equal Variance Assumption**
+\\ The Scale Location Plot\\
+```{r}
+plot(final_bc, which = 3)
+```
+
+\\The BP Test\\
+```{r}
+bptest(final_bc)
+```
+** BP test with p-value > $\alpha = 0.05$, met equal variance assumption.
+
+**Normality Assumption**
+
+\\The Normal Q-Q Plot\\
+```{r}
+plot(final_bc, which = 2)
+```
+
+\\The Shapiro Test\\
+```{r}
+shapiro.test(residuals(final_bc))
+```
+** Shapiro Test with p-value > $\alpha = 0.05$, have now met the normality assumption.
+
+**Multicollinearity Test - VIF**
+```{r}
+imcdiag(final_bc, method="VIF")
+```
+**No multicollinearity is detected,.
+
+**Outliers Checking**
+
+\\Residuals vs Leverage Plot\\
+```{r}
+plot(final_bc,which=5)
+```
+** No significant outliers.
+
+\\Cook's Distance\\
+```{r}
+plot(final_bc,pch=18,col="purple",which=c(4))
+```
+** No significant outliers.
+
+#### Conclusion
+
+After this Box-Cox Transformation, all of our assumptions are met.
+
+## Predictions
+
+For our predictions for the three pitches, we first read in our prediction data from a CSV file.
+
+```{r}
+# Must compensate for R treating certain values as Boolean, ensure
+# that they are read in as strings to match the model.
+newdata <- read.csv("steam_s-fps-predict.csv") |> mutate(
+  multi=if_else(multi==TRUE, "True", "False"),
+  ctlr=if_else(multi==TRUE, "True", "False")
+)
+```
+
+Now, proceeding with our predictions and performing the inverse Box-Cox transformation to return to dollar units:
+
+```{r}
+(bestlambda * predict(final_bc, newdata[1,], interval="predict") + 1)^(1/bestlambda)
+(bestlambda * predict(final_bc, newdata[2,], interval="predict") + 1)^(1/bestlambda)
+(bestlambda * predict(final_bc, newdata[3,], interval="predict") + 1)^(1/bestlambda)
+```
+
+The NaN values, we believe, are for cases where the result approaches toward zero past the precision of R to compute. For these cases we will treat the prediction as essentiall zero.
+
+- For the first pitch, the estimate is \$425,979, with a 95% prediction interval of [~\$0, \$30,901,359].
+- For the second pitch, the estimate is \$7,123,337, with a 95% prediction interval of [\$56,125, \$89,861,575].
+- For the third pitch, the estimate is \$1,154,049, with a 95% prediction interval of [\$350, \$26,989,418].
+
+***
