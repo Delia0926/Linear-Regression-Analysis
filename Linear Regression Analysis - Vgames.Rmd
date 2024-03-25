@@ -1,6 +1,7 @@
 ---
 title: "Video Games Data Exploration - Steam FPS 10 Years"
 output: html_notebook
+co-workers: Jesse, Cynthia, Anna, Delia
 ---
 
 ***
